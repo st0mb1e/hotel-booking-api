@@ -1,173 +1,141 @@
 # Hotel Booking API
 
-REST API бронирования отелей на Java 21 и Spring Boot 3.5.7. Система разделена на четыре приложения; HTTP-запросы проходят через Spring Cloud Gateway, адреса сервисов определяются через Eureka.
+Работу выполнил Ярцев Владислав.
+
+## Описание проекта
+
+REST API для бронирования гостиничных номеров.
+
+- Пользователь ищет свободные номера, создаёт и отменяет свои брони. Номер можно выбрать вручную или через автоподбор.
+- Администратор управляет отелями, номерами и пользователями, просматривает статистику загрузки.
+
+Стек: Java 21, Spring Boot 3.5.7, Spring Cloud, Spring Security, JPA, H2 и Flyway.
+
+## Архитектура
+
+| Приложение | Порт | Назначение |
+|---|---:|---|
+| [api-gateway](api-gateway/README.md) | 8080 | Принимает внешние запросы |
+| [hotel-service](hotel-service/README.md) | 8081 | Хранит отели, номера и календарь занятости |
+| [booking-service](booking-service/README.md) | 8082 | Работает с пользователями и бронированиями, выдаёт JWT |
+| [discovery-server](discovery-server/README.md) | 8761 | Реестр сервисов Eureka |
+
+```mermaid
+flowchart LR
+    C[Клиент] -->|HTTP + JWT| G[API Gateway :8080]
+    G -->|HTTP| B[Booking Service :8082]
+    G -->|HTTP| H[Hotel Service :8081]
+    B -->|служебный JWT| H
+    B --> BD[(H2: users, bookings)]
+    H --> HD[(H2: hotels, rooms, reservations)]
+    G -. discovery .-> E[Eureka Server :8761]
+    B -. регистрация и discovery .-> E
+    H -. регистрация .-> E
+```
+
+Общие DTO и проверка JWT находятся в [common](common/README.md). Booking и Hotel используют отдельные H2 в памяти. При перезапуске сервиса его данные теряются.
 
 ## Запуск
 
-Нужны JDK 21, `curl`, OpenSSL и Python 3 для демонстрационной проверки. Maven скачивает Wrapper при первом запуске.
+Нужны JDK 21, curl и OpenSSL. Для HTTP-проверок нужен Python 3. Maven загружается через Wrapper.
+
+Из корня репозитория нужно выполнить:
 
 ```sh
 ./mvnw verify
 ./scripts/run-local.sh --skip-build
-python3 scripts/smoke-test.py
+```
+
+Скрипт создаёт ключи в `.local/keys` и запускает четыре приложения. Логи сохраняются в `.local/logs`.
+
+Для остановки нужно выполнить:
+
+```sh
 ./scripts/stop-local.sh
 ```
 
-Если стандартные порты заняты, их можно заменить:
+Другие порты, переменные окружения и ручной запуск описаны в [инструкции по запуску](docs/running.md).
 
-```sh
-DISCOVERY_PORT=18761 HOTEL_PORT=18081 BOOKING_PORT=18082 GATEWAY_PORT=18080 ./scripts/run-local.sh --skip-build
-API_URL=http://localhost:18080 python3 scripts/smoke-test.py
-```
+## Пример работы с API
 
-Без `--skip-build` скрипт запуска сначала собирает JAR. Логи находятся в `.local/logs`, PID — в `.local/pids`. Скрипты не требуют Docker. Windows: собрать через `mvnw.cmd`, создать RSA-ключи OpenSSL и запускать JAR вручную из корня репозитория.
-
-| Приложение | Порт | Назначение |
-|---|---:|---|
-| API Gateway | 8080 | Внешний API |
-| Hotel Service | 8081 | Отели, номера, резервирование и статистика |
-| Booking Service | 8082 | Пользователи, JWT и бронирования |
-| Eureka Server | 8761 | Реестр сервисов |
-
-Swagger UI: [Hotel](http://localhost:8081/swagger-ui.html), [Booking](http://localhost:8082/swagger-ui.html). Спецификации: `/v3/api-docs` на соответствующем сервисе. Состояние каждого приложения: `/actuator/health`.
-
-При запуске создаются два отеля, четыре доступных номера и один номер вне эксплуатации. Демонстрационные пользователи:
+Адрес Gateway: `http://localhost:8080`. По умолчанию доступны тестовые пользователи:
 
 | Логин | Пароль | Роль |
 |---|---|---|
 | `admin` | `Admin12345!` | ADMIN |
 | `alice` | `Alice12345!` | USER |
 
-`DEMO_ENABLED=false` отключает предзаполнение. Эти учётные записи предназначены для локальной демонстрации.
+### Вход
 
-## Пример работы
+Для получения токена нужно выполнить запрос:
 
-Получить токен через `POST /api/auth/login`:
-
-```json
-{"username":"alice","password":"Alice12345!"}
+```sh
+curl -sS http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"Alice12345!"}'
 ```
 
-В ответе поле `accessToken`. Передавать его в заголовке `Authorization: Bearer <accessToken>`. Токен действует один час.
+Вместо `<accessToken>` в следующих запросах нужно указать токен из ответа. Он действует один час.
 
-1. `GET /api/hotels` — выбрать отель.
-2. `GET /api/rooms/recommend?startDate=2027-01-10&endDate=2027-01-13` — получить свободные номера по возрастанию `timesBooked`, затем `id`.
-3. `POST /api/bookings` с заголовком `Idempotency-Key: january-trip-1`:
+### Поиск свободных номеров
 
-```json
-{"roomId":1,"autoSelect":false,"startDate":"2027-01-10","endDate":"2027-01-13"}
+```sh
+curl -sS 'http://localhost:8080/api/rooms/recommend?startDate=2027-01-10&endDate=2027-01-13' \
+  -H 'Authorization: Bearer <accessToken>'
 ```
 
-Для автоподбора передать `autoSelect:true`; `roomId` игнорируется, необязательный `hotelId` ограничивает выбор отелем. Даты в примере нужно заменить, если они уже прошли.
+### Создание брони
 
-4. `GET /api/bookings` — своя история с пагинацией.
-5. `DELETE /api/bookings/{id}` — отменить бронь и освободить номер.
+```sh
+curl -sS http://localhost:8080/api/bookings \
+  -H 'Authorization: Bearer <accessToken>' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: trip-2027-01' \
+  -d '{"roomId":1,"autoSelect":false,"startDate":"2027-01-10","endDate":"2027-01-13"}'
+```
 
-Период проживания — `[startDate, endDate)`: выезд и следующий заезд в один день не конфликтуют. Заезд не может быть в прошлом, выезд должен быть позже заезда; максимальный период — один год. Идентификатор пользователя берётся из токена.
+Для автоподбора нужно указать `"autoSelect":true`. Если даты примера уже прошли, нужно заменить их на актуальные.
 
-## API
+## Основные эндпойнты
 
-Все пути ниже доступны через Gateway. Списки используют `page` (от нуля) и `size` (1–100).
-
-| Метод и путь | Доступ | Описание |
+| Метод и путь | Доступ | Назначение |
 |---|---|---|
-| `POST /api/auth/register` | Публичный | Регистрация USER и выдача JWT |
-| `POST /api/auth/login` | Публичный | Вход |
-| `GET /api/users`, `GET /api/users/{id}` | ADMIN | Пользователи |
-| `POST /api/users` | ADMIN | Создание пользователя с ролью |
-| `PATCH /api/users/{id}` | ADMIN | Изменение данных, роли или активности |
-| `DELETE /api/users/{id}` | ADMIN | Отключение пользователя с сохранением истории |
-| `POST /api/bookings` | USER, ADMIN | Создание с `Idempotency-Key` |
-| `GET /api/bookings` | USER, ADMIN | Только свои брони |
-| `GET /api/bookings/{id}` | Владелец | Получение брони |
-| `DELETE /api/bookings/{id}` | Владелец | Идемпотентная отмена |
-| `GET /api/hotels?q=...` | USER, ADMIN | Поиск по названию/адресу |
-| `GET /api/hotels/{id}` | USER, ADMIN | Отель |
-| `POST /api/hotels`, `PATCH /api/hotels/{id}`, `DELETE /api/hotels/{id}` | ADMIN | Управление отелями |
-| `GET /api/rooms?startDate=...&endDate=...&hotelId=...` | USER, ADMIN | Свободные номера, порядок по id |
-| `GET /api/rooms/recommend` | USER, ADMIN | Те же параметры, сортировка по загруженности |
-| `GET /api/rooms/{id}` | USER, ADMIN | Данные номера |
-| `GET /api/rooms/all` | ADMIN | Все действующие номера, включая недоступные |
-| `POST /api/rooms`, `PATCH /api/rooms/{id}`, `DELETE /api/rooms/{id}` | ADMIN | Управление номерами |
-| `GET /api/hotels/statistics?startDate=...&endDate=...` | ADMIN | Число резервирований, занятые ночи и процент загрузки |
+| `POST /api/auth/register`, `POST /api/auth/login` | Публичный | Регистрация и вход |
+| `GET /api/hotels` | USER, ADMIN | Поиск отелей |
+| `GET /api/rooms` | USER, ADMIN | Свободные номера на выбранные даты |
+| `GET /api/rooms/recommend` | USER, ADMIN | Свободные номера по возрастанию загрузки |
+| `POST /api/bookings` | USER, ADMIN | Создание брони |
+| `GET /api/bookings`, `GET /api/bookings/{id}` | Владелец | Свои брони |
+| `DELETE /api/bookings/{id}` | Владелец | Отмена брони |
+| `GET /api/hotels/statistics` | ADMIN | Статистика загрузки |
 
-Для создания номера нужны `hotelId`, `number`, `available`; для изменения — `number` и `available`. Для изменения отеля нужны `name` и `address`. Номер с действующими или будущими резервированиями нельзя удалить или вывести из эксплуатации. Отели и номера удаляются логически, чтобы сохранять связи с историей.
-
-Поддерживаются пути из примеров задания: `/user/register`, `/user/auth`, `/user`, `/user/{id}`, `/booking`, `/booking/{id}`, `/bookings`. `PATCH /user` принимает `id` в теле, `DELETE /user?id=...` — в строке запроса.
-
-Внутренние `POST /api/rooms/{id}/confirm-availability` и `POST /api/rooms/{id}/release` требуют служебный JWT и закрыты в Gateway даже для ADMIN. Входной запрос резервирования: `bookingId`, `startDate`, `endDate`. Освобождение: `bookingId`, `reason` (`COMPENSATION` или `USER_CANCELLATION`).
-
-## Согласованность и повторы
-
-```mermaid
-sequenceDiagram
-    participant C as Клиент
-    participant B as Booking Service
-    participant H as Hotel Service
-    C->>B: Создать бронь + Idempotency-Key
-    B->>B: Зафиксировать PENDING
-    B->>H: confirm-availability(bookingId, даты)
-    alt Номер зарезервирован
-        H-->>B: RESERVED
-        B->>B: Зафиксировать CONFIRMED
-        B-->>C: 201 + бронь
-    else Ошибка или тайм-аут
-        B->>B: CANCELLED + задача компенсации
-        B->>H: release(bookingId)
-        B-->>C: 409 / 503 + bookingId
-    end
-```
-
-HTTP-вызовы выполняются между локальными транзакциями. Hotel Service блокирует строку номера и в той же транзакции проверяет календарь и сохраняет резерв. Параллельная попытка занять пересекающийся период получает `409`.
-
-Ключ идемпотентности уникален в пределах пользователя. Повтор с теми же параметрами возвращает ту же бронь: `200` для подтверждённой, `202` для ещё обрабатываемой. Другие параметры с тем же ключом дают `409 IDEMPOTENCY_CONFLICT`. Повтор отменённого запроса возвращает сохранённую причину отказа. После отмены новую попытку создают с новым ключом.
-
-Сетевые ошибки, HTTP 5xx и 429 повторяются до трёх попыток с интервалами 100 и 200 мс. Тайм-аут соединения — 1 с, запроса — 2 с. Бизнес-ошибки 4xx не повторяются. Отдельный Circuit Breaker для компенсаций позволяет освобождать резервы, когда цепь создания бронирований разомкнута.
-
-Неудачная компенсация остаётся в `bookings`; обработчик проверяет очередь каждые 5 с и увеличивает интервал повторов до 60 с. `PENDING`, не изменявшийся 120 с, отменяется. В ответах есть `compensationPending`: `true` означает, что освобождение ещё ожидает повторной обработки. Запись об отмене в Hotel Service не позволяет запоздалому подтверждению восстановить резерв.
-
-`timesBooked` увеличивается один раз при первом резервировании. Техническая компенсация уменьшает его один раз; пользовательская отмена сохраняет исторический счётчик. Статистика занятых ночей учитывает только неотменённые резервы, обрезает периоды по границам отчёта и делит на число ночей всех действующих номеров, включая временно недоступные.
-
-## Структура и решения
-
-```text
-common/             транспортные DTO, JWT-проверки и HTTP-ошибки
-api-gateway/        маршруты и реактивная безопасность
-booking-service/    пользователи, бронирования, сага и восстановление
-hotel-service/      каталог, календарь и статистика
-discovery-server/   Eureka
-scripts/            запуск, остановка и сквозная проверка
-docs/adr/           решения по данным, транзакциям и безопасности
-```
-
-В бизнес-сервисах разделены контроллеры, DTO, сервисы, JPA-сущности и репозитории. Схемы и индексы создаёт Flyway; Hibernate проверяет их соответствие сущностям. Между базами нет внешних ключей или общих JPA-сущностей.
-
-- [Данные и границы сервисов](docs/adr/001-data-and-consistency.md)
-- [Идемпотентность и конкурентный доступ](docs/adr/002-idempotency-and-locks.md)
-- [JWT и внутренний API](docs/adr/003-security.md)
-
-H2 работает в памяти: перезапуск сервиса удаляет его данные. Каждый бизнес-сервис рассчитан на один экземпляр с собственной базой. Eureka обеспечивает обнаружение адресов; для масштабирования и восстановления после перезапуска нужна общая постоянная БД для экземпляров одного сервиса. Gateway и Eureka не хранят бизнес-данные.
-
-## Конфигурация
-
-| Параметр | По умолчанию |
-|---|---|
-| `EUREKA_URL` | `http://localhost:8761/eureka/` |
-| `JWT_PUBLIC_KEY` | `file:./.local/keys/public.pem` |
-| `JWT_PRIVATE_KEY` | `file:./.local/keys/private.pem`, только Booking |
-| `DEMO_ENABLED` | `true` |
-| `HOTEL_URL` | Пусто: адрес через Eureka; прямой URL нужен для отдельного запуска/тестов |
-| `PORT` | Собственный порт каждого приложения |
-
-RSA-пара создаётся локально и исключена из Git. Для ручного запуска выполнить `scripts/generate-keys.sh`, затем `java -jar <модуль>/target/<модуль>-1.0.0.jar` из корня проекта; сначала Eureka, затем бизнес-сервисы и Gateway.
-
-Ошибки возвращаются единообразно: `timestamp`, `status`, `code`, `message`, `path`, `requestId`, `details`. Основные статусы: `400` — входные данные, `401` — токен/учётные данные, `403` — роль, `404` — объект отсутствует или принадлежит другому пользователю, `409` — конфликт, `503` — недоступен Hotel Service. Логи выводятся в JSON с полями событий и корреляции. `X-Request-Id` проходит через Gateway и оба сервиса, `bookingId` связывает шаги саги в логах. Пароли и токены в рабочих логах не записываются.
+Полный список методов, административные операции и параметры приведены в [справочнике API](docs/api.md). Swagger доступен у [Hotel Service](http://localhost:8081/swagger-ui.html) и [Booking Service](http://localhost:8082/swagger-ui.html).
 
 ## Проверка
 
+JUnit-тесты и проверка форматирования запускаются без работающих сервисов:
+
 ```sh
 ./mvnw verify
-./mvnw spotless:apply
 ```
 
-Первая команда запускает JUnit, проверки форматирования и сборку. Вторая применяет форматтер после изменения кода. Тесты поднимают отдельные H2 и локальные HTTP-заглушки на случайных портах; работающая Eureka не нужна. Покрываются CRUD, JWT, роли, календарь, параллельные брони, повторы, отмена, потеря связи, отложенная компенсация и Circuit Breaker.
+Для HTTP-проверок нужно запустить все четыре приложения с демоданными пользователей `admin` и `alice`:
+
+```sh
+python3 scripts/smoke-test.py
+python3 scripts/load-test.py
+python3 scripts/integration-test.py
+```
+
+Сценарии тестирования и соответствие критериям описаны в [инструкции по проверке](docs/verification.md).
+
+## Документация
+
+- [Справочник API](docs/api.md)
+- [Настройка и запуск](docs/running.md)
+- [Схема данных](docs/database.md)
+- [Проверка проекта](docs/verification.md)
+- [ADR: разделение данных и согласованность](docs/adr/001-data-and-consistency.md)
+- [ADR: идемпотентность и блокировки](docs/adr/002-idempotency-and-locks.md)
+- [ADR: JWT и внутренний API](docs/adr/003-security.md)
+- [ADR: HTTP-клиент и обработка сбоев](docs/adr/004-http-resilience.md)

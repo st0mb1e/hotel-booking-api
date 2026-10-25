@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.*;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.http.HttpClient;
 import java.time.*;
 import java.util.List;
 import java.util.UUID;
@@ -22,6 +23,7 @@ import ru.hotelbooking.common.contract.*;
 class HttpHotelClientTest {
     HttpServer server;
     ExecutorService executor;
+    HttpClient http;
     AtomicInteger calls;
     AtomicReference<String> mode;
     ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
@@ -40,6 +42,7 @@ class HttpHotelClientTest {
         server.setExecutor(executor);
         server.createContext("/", this::handle);
         server.start();
+        http = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(200)).build();
         when(tokens.serviceToken()).thenReturn("service-token");
     }
 
@@ -47,63 +50,66 @@ class HttpHotelClientTest {
     void stopServer() {
         server.stop(0);
         executor.shutdownNow();
+        http.close();
     }
 
     HttpHotelClient client(int attempts, int minimumCalls, Duration timeout, boolean discover) {
+        var properties =
+                new HotelClientProperties(
+                        discover ? "" : "http://127.0.0.1:" + server.getAddress().getPort(),
+                        Duration.ofMillis(200),
+                        timeout,
+                        attempts,
+                        Duration.ofMillis(5),
+                        minimumCalls,
+                        Duration.ofSeconds(30));
         return new HttpHotelClient(
-                discovery,
-                tokens,
+                http,
+                new HotelEndpointResolver(discovery, properties),
+                new HotelCallPolicy(properties),
+                properties,
                 mapper,
-                discover ? "" : "http://127.0.0.1:" + server.getAddress().getPort(),
-                Duration.ofMillis(200),
-                timeout,
-                attempts,
-                Duration.ofMillis(5),
-                minimumCalls,
-                Duration.ofSeconds(30));
+                tokens);
     }
 
     void handle(HttpExchange exchange) throws IOException {
         int call = calls.incrementAndGet();
         String path = exchange.getRequestURI().getPath();
-        int status = 200;
-        String body;
         try {
             assertThat(exchange.getRequestHeaders().getFirst("Authorization"))
                     .isEqualTo("Bearer service-token");
             assertThat(exchange.getRequestHeaders().getFirst("X-Request-Id")).isNotBlank();
-            if (path.endsWith("/release")) {
-                var request = mapper.readValue(exchange.getRequestBody(), ReleaseCommand.class);
-                body =
-                        mapper.writeValueAsString(
-                                new ReservationReceipt(request.bookingId(), 1, "RELEASED"));
-            } else if ("timeout".equals(mode.get())) {
-                Thread.sleep(350);
-                body = "{}";
+            boolean releasing = path.endsWith("/release");
+            var json = mapper.readTree(exchange.getRequestBody());
+            UUID id = UUID.fromString(json.path("bookingId").asText());
+            if (!releasing && "timeout".equals(mode.get())) Thread.sleep(500);
+            int status = 200;
+            String body;
+            if (releasing) {
+                body = mapper.writeValueAsString(new ReservationReceipt(id, null, "RELEASED"));
             } else if ("down".equals(mode.get()) || ("recover".equals(mode.get()) && call < 3)) {
                 status = 503;
-                body = "{\"code\":\"UNAVAILABLE\"}";
+                body = "{}";
             } else if ("conflict".equals(mode.get())) {
                 status = 409;
                 body = "{\"code\":\"ROOM_UNAVAILABLE\",\"message\":\"occupied\"}";
-            } else if (path.endsWith("/recommend")) {
-                boolean second = exchange.getRequestURI().getQuery().contains("page=1");
-                body =
-                        second
-                                ? "{\"content\":[{\"id\":2,\"hotelId\":1,\"number\":\"102\",\"available\":true,\"timesBooked\":0}],\"page\":1,\"size\":100,\"totalElements\":2,\"totalPages\":2}"
-                                : "{\"content\":[{\"id\":1,\"hotelId\":1,\"number\":\"101\",\"available\":true,\"timesBooked\":1}],\"page\":0,\"size\":100,\"totalElements\":2,\"totalPages\":2}";
+            } else if ("plain-rejection".equals(mode.get())) {
+                status = 404;
+                body = "not found";
             } else {
-                var request = mapper.readValue(exchange.getRequestBody(), ReservationCommand.class);
-                body =
-                        mapper.writeValueAsString(
-                                new ReservationReceipt(request.bookingId(), 1, "RESERVED"));
+                if ("invalid-receipt".equals(mode.get()) && call < 3) id = UUID.randomUUID();
+                body = mapper.writeValueAsString(new ReservationReceipt(id, 1L, "RESERVED"));
             }
             byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(status, bytes.length);
+            exchange.getResponseBody().flush();
+            if (!releasing && "body-timeout".equals(mode.get())) Thread.sleep(700);
             exchange.getResponseBody().write(bytes);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+        } catch (IOException disconnected) {
+            // Клиент отменяет соединение, когда истекает тайм-аут.
         } finally {
             exchange.close();
         }
@@ -124,7 +130,7 @@ class HttpHotelClientTest {
             assertThatThrownBy(() -> client.confirm(1, command))
                     .isInstanceOfSatisfying(
                             HotelRejectedException.class,
-                            e -> assertThat(e.code()).isEqualTo("ROOM_UNAVAILABLE"));
+                            error -> assertThat(error.code()).isEqualTo("ROOM_UNAVAILABLE"));
         assertThat(calls.get()).isEqualTo(5);
     }
 
@@ -140,6 +146,17 @@ class HttpHotelClientTest {
     }
 
     @Test
+    void timeoutIncludesBodyAfterHeadersHaveArrived() {
+        mode.set("body-timeout");
+        var client = client(3, 20, Duration.ofMillis(150), false);
+        long before = System.nanoTime();
+        assertThatThrownBy(() -> client.confirm(1, command))
+                .isInstanceOf(HotelUnavailableException.class);
+        assertThat(Duration.ofNanos(System.nanoTime() - before)).isLessThan(Duration.ofSeconds(2));
+        assertThat(calls.get()).isEqualTo(3);
+    }
+
+    @Test
     void openOperationCircuitDoesNotBlockCompensation() {
         mode.set("down");
         var client = client(1, 2, Duration.ofSeconds(1), false);
@@ -147,18 +164,36 @@ class HttpHotelClientTest {
             assertThatThrownBy(() -> client.confirm(1, command))
                     .isInstanceOf(HotelUnavailableException.class);
         assertThat(calls.get()).isEqualTo(2);
-        client.release(
-                1, new ReleaseCommand(command.bookingId(), ReleaseCommand.Reason.COMPENSATION));
+        client.release(new ReleaseCommand(command.bookingId(), ReleaseCommand.Reason.COMPENSATION));
         assertThat(calls.get()).isEqualTo(3);
     }
 
     @Test
-    void recommendationsReadAllPagesAndSortByUsage() {
-        var result =
+    void allocationReturnsRoomSelectedByHotel() {
+        long selected =
                 client(1, 20, Duration.ofSeconds(1), false)
-                        .recommend(start, start.plusDays(2), null);
-        assertThat(result).extracting(RoomSummary::id).containsExactly(2L, 1L);
-        assertThat(calls.get()).isEqualTo(2);
+                        .allocate(
+                                new AllocationCommand(
+                                        command.bookingId(), start, start.plusDays(2), null));
+        assertThat(selected).isEqualTo(1);
+        assertThat(calls.get()).isEqualTo(1);
+    }
+
+    @Test
+    void invalidReceiptsAreRetriedWithinTheOperationPolicy() {
+        mode.set("invalid-receipt");
+        client(3, 20, Duration.ofSeconds(1), false).confirm(1, command);
+        assertThat(calls.get()).isEqualTo(3);
+    }
+
+    @Test
+    void plainBusinessRejectionsAreNotRetried() {
+        mode.set("plain-rejection");
+        assertThatThrownBy(() -> client(3, 20, Duration.ofSeconds(1), false).confirm(1, command))
+                .isInstanceOfSatisfying(
+                        HotelRejectedException.class,
+                        error -> assertThat(error.status()).isEqualTo(404));
+        assertThat(calls.get()).isEqualTo(1);
     }
 
     @Test

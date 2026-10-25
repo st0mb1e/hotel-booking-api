@@ -3,38 +3,16 @@
 
 import concurrent.futures
 import datetime as dt
-import json
 import os
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
+
+from api_client import ApiClient, expect
 
 BASE = os.environ.get("API_URL", "http://127.0.0.1:8080").rstrip("/")
 
-
-def request(method, path, token=None, body=None, key=None):
-    headers = {"Accept": "application/json", "X-Request-Id": "smoke-" + uuid.uuid4().hex}
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    if key:
-        headers["Idempotency-Key"] = key
-    req = urllib.request.Request(BASE + path, data=None if body is None else json.dumps(body).encode(), headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = response.read()
-            return response.status, json.loads(data) if data else {}
-    except urllib.error.HTTPError as error:
-        data = error.read()
-        return error.code, json.loads(data) if data else {}
-
-
-def expect(status, actual, label):
-    if actual != status:
-        raise AssertionError(f"{label}: ожидался HTTP {status}, получен {actual}")
+request = ApiClient(BASE).request
 
 
 def main():

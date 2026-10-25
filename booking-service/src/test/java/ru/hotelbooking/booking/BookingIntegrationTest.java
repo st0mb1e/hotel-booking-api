@@ -28,6 +28,7 @@ import ru.hotelbooking.booking.repository.*;
 import ru.hotelbooking.booking.service.*;
 import ru.hotelbooking.common.api.ApiException;
 import ru.hotelbooking.common.contract.*;
+import ru.hotelbooking.common.testsupport.TestKeys;
 
 @SpringBootTest(
         properties = {
@@ -204,7 +205,6 @@ class BookingIntegrationTest {
         assertThat(transactions.get(id).compensationPending()).isFalse();
         verify(hotel)
                 .release(
-                        eq(1L),
                         argThat(
                                 command ->
                                         command.bookingId().equals(id)
@@ -219,21 +219,21 @@ class BookingIntegrationTest {
     @Test
     void failedCompensationIsPersistedAndRetriedByRecovery() throws Exception {
         doThrow(new HotelUnavailableException("down")).when(hotel).confirm(anyLong(), any());
-        doThrow(new HotelUnavailableException("down")).when(hotel).release(anyLong(), any());
+        doThrow(new HotelUnavailableException("down")).when(hotel).release(any());
         create("deferred", input(1))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.details.compensationPending").value(true));
         var booking = bookings.findAll().getFirst();
         assertThat(booking.isCompensationPending()).isTrue();
         assertThat(booking.getCompensationAttempts()).isEqualTo(1);
-        doNothing().when(hotel).release(anyLong(), any());
+        doNothing().when(hotel).release(any());
         jdbc.update(
                 "update bookings set next_compensation_at = ? where id = ?",
                 Instant.now().minusSeconds(1),
                 booking.getId());
         new BookingRecovery(transactions, compensations, Duration.ofSeconds(120)).recover();
         assertThat(transactions.get(booking.getId()).compensationPending()).isFalse();
-        verify(hotel, times(2)).release(anyLong(), any());
+        verify(hotel, times(2)).release(any());
     }
 
     @Test
@@ -247,7 +247,7 @@ class BookingIntegrationTest {
         assertThat(transactions.get(pending.booking().id()).status())
                 .isEqualTo(Booking.Status.CANCELLED);
         assertThat(transactions.get(pending.booking().id()).compensationPending()).isFalse();
-        verify(hotel).release(eq(1L), any());
+        verify(hotel).release(any());
     }
 
     @Test
@@ -272,31 +272,76 @@ class BookingIntegrationTest {
     }
 
     @Test
-    void automaticSelectionTriesNextRoomOnConflictAndIgnoresRoomId() throws Exception {
-        when(hotel.recommend(start, end, 5L))
-                .thenReturn(
-                        List.of(
-                                new RoomSummary(1, 5, "101", true, 0),
-                                new RoomSummary(2, 5, "102", true, 0)));
-        doThrow(new HotelRejectedException(409, "ROOM_UNAVAILABLE", "occupied"))
-                .when(hotel)
-                .confirm(eq(1L), any());
+    void automaticSelectionDelegatesAtomicAllocationAndIgnoresRoomId() throws Exception {
+        when(hotel.allocate(any())).thenReturn(2L);
         var auto = new CreateBooking(999L, true, 5L, start, end);
+
         create("auto", auto)
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.roomId").value(2));
         create("auto", new CreateBooking(-888L, true, 5L, start, end)).andExpect(status().isOk());
-        verify(hotel).confirm(eq(1L), any());
-        verify(hotel).confirm(eq(2L), any());
+
+        verify(hotel, times(1))
+                .allocate(
+                        argThat(
+                                command ->
+                                        command.hotelId().equals(5L)
+                                                && command.startDate().equals(start)
+                                                && command.endDate().equals(end)));
+        verify(hotel, never()).confirm(anyLong(), any());
     }
 
     @Test
-    void noRecommendedRoomsCancelsWithoutRelease() throws Exception {
-        when(hotel.recommend(start, end, null)).thenReturn(List.of());
+    void noAvailableRoomsCancelsWithoutRelease() throws Exception {
+        when(hotel.allocate(any()))
+                .thenThrow(new HotelRejectedException(409, "ROOM_UNAVAILABLE", "occupied"));
+
         create("empty", new CreateBooking(null, true, null, start, end))
                 .andExpect(status().isConflict());
+
         assertThat(bookings.findAll().getFirst().getStatus()).isEqualTo(Booking.Status.CANCELLED);
-        verify(hotel, never()).release(anyLong(), any());
+        verify(hotel, never()).release(any());
+    }
+
+    @Test
+    void lostAllocationReplyIsCompensatedWithoutKnowingRoom() throws Exception {
+        when(hotel.allocate(any())).thenThrow(new HotelUnavailableException("reply lost"));
+
+        var response =
+                create("unknown-room", new CreateBooking(null, true, null, start, end))
+                        .andExpect(status().isServiceUnavailable())
+                        .andReturn();
+        var id = UUID.fromString(json(response).path("details").path("bookingId").asText());
+
+        assertThat(transactions.get(id).roomId()).isNull();
+        assertThat(transactions.get(id).status()).isEqualTo(Booking.Status.CANCELLED);
+        verify(hotel)
+                .release(
+                        argThat(
+                                command ->
+                                        command.bookingId().equals(id)
+                                                && command.reason()
+                                                        == ReleaseCommand.Reason.COMPENSATION));
+    }
+
+    @Test
+    void recoveryReleasesAnAllocationWhoseRoomWasNeverSaved() {
+        var pending =
+                transactions.begin(
+                        alice.user().id(),
+                        "unknown-stale",
+                        new CreateBooking(null, true, null, start, end));
+        jdbc.update(
+                "update bookings set updated_at = ? where id = ?",
+                Instant.now().minusSeconds(300),
+                pending.booking().id());
+
+        new BookingRecovery(transactions, compensations, Duration.ofSeconds(120)).recover();
+
+        assertThat(transactions.get(pending.booking().id()).status())
+                .isEqualTo(Booking.Status.CANCELLED);
+        verify(hotel)
+                .release(argThat(command -> command.bookingId().equals(pending.booking().id())));
     }
 
     @Test
@@ -314,7 +359,6 @@ class BookingIntegrationTest {
                     .andExpect(jsonPath("$.status").value("CANCELLED"));
         verify(hotel, times(1))
                 .release(
-                        eq(1L),
                         argThat(
                                 command ->
                                         command.reason()
@@ -414,6 +458,40 @@ class BookingIntegrationTest {
         create("missing-room", input(999))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.details.compensationPending").value(false));
-        verify(hotel, never()).release(anyLong(), any());
+        verify(hotel, never()).release(any());
+    }
+
+    @Test
+    void cancellationWhileAllocationIsInFlightReleasesByIdBeforeRoomIsKnown() throws Exception {
+        var entered = new CountDownLatch(1);
+        var finish = new CountDownLatch(1);
+        var bookingId = new AtomicReference<UUID>();
+        when(hotel.allocate(any()))
+                .thenAnswer(
+                        call -> {
+                            bookingId.set(call.<AllocationCommand>getArgument(0).bookingId());
+                            entered.countDown();
+                            assertThat(finish.await(10, TimeUnit.SECONDS)).isTrue();
+                            return 1L;
+                        });
+        var input = new CreateBooking(null, true, null, start, end);
+
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var creating =
+                    executor.submit(() -> service.create(alice.user().id(), "cancel-auto", input));
+            try {
+                assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
+                service.cancel(bookingId.get(), alice.user().id());
+            } finally {
+                finish.countDown();
+            }
+            assertThatThrownBy(() -> creating.get(10, TimeUnit.SECONDS))
+                    .hasCauseInstanceOf(ApiException.class);
+        }
+        var saved = transactions.get(bookingId.get());
+        assertThat(saved.status()).isEqualTo(Booking.Status.CANCELLED);
+        assertThat(saved.roomId()).isNull();
+        verify(hotel, times(1))
+                .release(argThat(command -> command.bookingId().equals(bookingId.get())));
     }
 }

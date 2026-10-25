@@ -1,4 +1,4 @@
-package ru.hotelbooking.booking;
+package ru.hotelbooking.common.testsupport;
 
 import com.nimbusds.jose.jwk.*;
 import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
@@ -9,10 +9,12 @@ import java.util.*;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.*;
 
-final class TestKeys {
-    static final RSAKey KEY;
-    static final Path PUBLIC;
-    static final Path PRIVATE;
+public final class TestKeys {
+    private TestKeys() {}
+
+    private static final RSAKey KEY;
+    public static final Path PUBLIC;
+    public static final Path PRIVATE;
 
     static {
         try {
@@ -38,12 +40,12 @@ final class TestKeys {
                 + "-----\n";
     }
 
-    static String user(String subject, String role) {
+    public static String user(String subject, String role) {
         return token(
                 subject, List.of(role), "hotel-booking-api", null, Instant.now().plusSeconds(3600));
     }
 
-    static String service() {
+    public static String service() {
         return token(
                 "booking-service",
                 List.of(),
@@ -52,7 +54,7 @@ final class TestKeys {
                 Instant.now().plusSeconds(300));
     }
 
-    static String token(
+    public static String token(
             String subject, List<String> roles, String audience, String scope, Instant expiresAt) {
         var encoder = new NimbusJwtEncoder(new ImmutableJWKSet<>(new JWKSet(KEY)));
         var claims =

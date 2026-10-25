@@ -3,17 +3,39 @@ package ru.hotelbooking.gateway;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.util.Map;
 import org.junit.jupiter.api.*;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.cloud.gateway.route.RouteLocator;
+import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
+import org.springframework.context.annotation.Bean;
 import org.springframework.test.context.*;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import ru.hotelbooking.common.testsupport.TestKeys;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"eureka.client.enabled=false", "spring.cloud.discovery.enabled=false"})
 class GatewayIntegrationTest {
+    @TestConfiguration
+    static class FailureRoutes {
+        @Bean
+        RouteLocator unreachableRoute(RouteLocatorBuilder builder) throws Exception {
+            int port;
+            try (var socket = new ServerSocket(0)) {
+                port = socket.getLocalPort();
+            }
+            return builder.routes()
+                    .route(
+                            "unreachable-test-backend",
+                            r -> r.path("/test/unavailable").uri("http://127.0.0.1:" + port))
+                    .build();
+        }
+    }
+
     static final HttpServer BACKEND;
 
     static {
@@ -150,5 +172,68 @@ class GatewayIntegrationTest {
                 .isOk()
                 .expectHeader()
                 .valueMatches("X-Request-Id", "[a-f0-9-]{36}");
+    }
+
+    @Test
+    void allocationAndReleaseByBookingAreAlsoInternal() {
+        for (String path : new String[] {"/api/rooms/allocate", "/api/rooms/release"}) {
+            client.post()
+                    .uri(path)
+                    .headers(h -> h.setBearerAuth(TestKeys.user("2", "ADMIN")))
+                    .exchange()
+                    .expectStatus()
+                    .isForbidden();
+        }
+    }
+
+    @Test
+    void connectionFailureReturns503WithUniformErrorAndRequestId() {
+        client.get()
+                .uri("/test/unavailable")
+                .headers(h -> h.setBearerAuth(TestKeys.user("1", "USER")))
+                .header("X-Request-Id", "failed-upstream-1")
+                .exchange()
+                .expectStatus()
+                .isEqualTo(503)
+                .expectHeader()
+                .valueEquals("X-Request-Id", "failed-upstream-1")
+                .expectBody()
+                .jsonPath("$.status")
+                .isEqualTo(503)
+                .jsonPath("$.code")
+                .isEqualTo("UPSTREAM_UNAVAILABLE")
+                .jsonPath("$.message")
+                .isNotEmpty()
+                .jsonPath("$.path")
+                .isEqualTo("/test/unavailable")
+                .jsonPath("$.requestId")
+                .isEqualTo("failed-upstream-1")
+                .jsonPath("$.timestamp")
+                .isNotEmpty()
+                .jsonPath("$.details")
+                .isMap();
+    }
+
+    @Test
+    void unknownRoutesUseTheSameErrorContract() {
+        client.get()
+                .uri("/missing-route")
+                .headers(h -> h.setBearerAuth(TestKeys.user("1", "USER")))
+                .exchange()
+                .expectStatus()
+                .isNotFound()
+                .expectBody()
+                .jsonPath("$.status")
+                .isEqualTo(404)
+                .jsonPath("$.code")
+                .isEqualTo("NOT_FOUND")
+                .jsonPath("$.path")
+                .isEqualTo("/missing-route")
+                .jsonPath("$.message")
+                .isNotEmpty()
+                .jsonPath("$.requestId")
+                .isNotEmpty()
+                .jsonPath("$.details")
+                .isMap();
     }
 }

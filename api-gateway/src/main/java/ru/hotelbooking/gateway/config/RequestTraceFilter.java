@@ -34,9 +34,9 @@ public class RequestTraceFilter implements WebFilter, Ordered {
                                                         headers.set(RequestIds.HEADER, requestId))
                                         .build())
                         .build();
-        return chain.filter(traced)
-                .doFinally(
-                        signal -> {
+        exchange.getResponse()
+                .beforeCommit(
+                        () -> {
                             log.atInfo()
                                     .addKeyValue("event", "http_request")
                                     .addKeyValue("requestId", requestId)
@@ -45,13 +45,15 @@ public class RequestTraceFilter implements WebFilter, Ordered {
                                     .addKeyValue(
                                             "status",
                                             exchange.getResponse().getStatusCode() == null
-                                                    ? 0
+                                                    ? 200
                                                     : exchange.getResponse()
                                                             .getStatusCode()
                                                             .value())
                                     .addKeyValue(
                                             "durationMs", (System.nanoTime() - started) / 1_000_000)
                                     .log("http_request");
+                            return Mono.empty();
                         });
+        return chain.filter(traced);
     }
 }

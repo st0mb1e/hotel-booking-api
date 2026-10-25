@@ -30,7 +30,7 @@ public class BookingTransactions {
 
     public record Start(BookingView booking, boolean created) {}
 
-    public record Compensation(UUID id, long roomId, ReleaseCommand.Reason reason) {}
+    public record Compensation(UUID id, ReleaseCommand.Reason reason) {}
 
     @Transactional
     public Start begin(long userId, String key, CreateBooking input) {
@@ -158,8 +158,7 @@ public class BookingTransactions {
     public Optional<Compensation> compensation(UUID id) {
         var booking = require(id);
         return booking.isCompensationPending()
-                ? Optional.of(
-                        new Compensation(id, booking.getRoomId(), booking.getCancellationReason()))
+                ? Optional.of(new Compensation(id, booking.getCancellationReason()))
                 : Optional.empty();
     }
 

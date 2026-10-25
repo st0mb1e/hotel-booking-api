@@ -1,6 +1,7 @@
 package ru.hotelbooking.hotel.service;
 
 import static ru.hotelbooking.hotel.api.HotelDtos.*;
+import static ru.hotelbooking.hotel.api.RoomDtos.*;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -21,12 +22,17 @@ public class HotelCatalog {
     private final HotelRepository hotels;
     private final RoomRepository rooms;
     private final ReservationRepository reservations;
+    private final ReservationGuard guard;
 
     public HotelCatalog(
-            HotelRepository hotels, RoomRepository rooms, ReservationRepository reservations) {
+            HotelRepository hotels,
+            RoomRepository rooms,
+            ReservationRepository reservations,
+            ReservationGuard guard) {
         this.hotels = hotels;
         this.rooms = rooms;
         this.reservations = reservations;
+        this.guard = guard;
     }
 
     public PageResponse<HotelView> hotels(String query, int page, int size) {
@@ -41,11 +47,13 @@ public class HotelCatalog {
 
     @Transactional
     public HotelView createHotel(HotelInput input) {
+        guard.lock();
         return HotelView.from(hotels.save(new Hotel(input.name(), input.address())));
     }
 
     @Transactional
     public HotelView updateHotel(long id, HotelInput input) {
+        guard.lock();
         var hotel = requireHotelForWrite(id);
         hotel.update(input.name(), input.address());
         return HotelView.from(hotel);
@@ -53,6 +61,7 @@ public class HotelCatalog {
 
     @Transactional
     public void deleteHotel(long id) {
+        guard.lock();
         var hotel = requireHotelForWrite(id);
         var activeRooms =
                 rooms.findByHotelIdAndDeletedFalseOrderById(id).stream()
@@ -65,6 +74,7 @@ public class HotelCatalog {
 
     @Transactional
     public RoomSummary createRoom(RoomInput input) {
+        guard.lock();
         return room(
                 rooms.save(
                         new Room(
@@ -75,6 +85,7 @@ public class HotelCatalog {
 
     @Transactional
     public RoomSummary updateRoom(long id, RoomUpdate input) {
+        guard.lock();
         var room = lockRoom(id);
         if (!input.available()) requireNoFutureReservation(room);
         room.update(input.number(), input.available());
@@ -83,6 +94,7 @@ public class HotelCatalog {
 
     @Transactional
     public void deleteRoom(long id) {
+        guard.lock();
         var room = lockRoom(id);
         requireNoFutureReservation(room);
         room.retire();
@@ -99,12 +111,12 @@ public class HotelCatalog {
                 recommend ? Sort.by("timesBooked").ascending().and(Sort.by("id")) : Sort.by("id");
         return page(
                 rooms.available(start, end, hotelId, PageRequest.of(page, size, sort))
-                        .map(ru.hotelbooking.hotel.api.HotelDtos::room));
+                        .map(ru.hotelbooking.hotel.api.RoomDtos::room));
     }
 
     public List<RoomSummary> allRooms() {
         return rooms.findByDeletedFalseAndHotelDeletedFalseOrderById().stream()
-                .map(ru.hotelbooking.hotel.api.HotelDtos::room)
+                .map(ru.hotelbooking.hotel.api.RoomDtos::room)
                 .toList();
     }
 

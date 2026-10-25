@@ -1,6 +1,6 @@
 package ru.hotelbooking.hotel.service;
 
-import static ru.hotelbooking.hotel.api.HotelDtos.*;
+import static ru.hotelbooking.hotel.api.StatisticsDtos.*;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;

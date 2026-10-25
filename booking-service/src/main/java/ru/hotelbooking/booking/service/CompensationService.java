@@ -21,7 +21,7 @@ public class CompensationService {
         var task = transactions.compensation(id);
         if (task.isEmpty()) return;
         try {
-            hotel.release(task.get().roomId(), new ReleaseCommand(id, task.get().reason()));
+            hotel.release(new ReleaseCommand(id, task.get().reason()));
             transactions.compensationDone(id);
         } catch (RuntimeException error) {
             transactions.compensationFailed(id);

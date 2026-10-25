@@ -1,6 +1,6 @@
 package ru.hotelbooking.hotel.api;
 
-import static ru.hotelbooking.hotel.api.HotelDtos.*;
+import static ru.hotelbooking.hotel.api.RoomDtos.*;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
@@ -77,6 +77,18 @@ public class RoomController {
     @PreAuthorize("hasRole('ADMIN')")
     public void delete(@PathVariable @Positive long id) {
         catalog.deleteRoom(id);
+    }
+
+    @PostMapping("/allocate")
+    @PreAuthorize("hasAuthority('SCOPE_rooms:write')")
+    public ReservationReceipt allocate(@Valid @RequestBody AllocationCommand command) {
+        return availability.allocate(command);
+    }
+
+    @PostMapping("/release")
+    @PreAuthorize("hasAuthority('SCOPE_rooms:write')")
+    public ReservationReceipt releaseByBooking(@Valid @RequestBody ReleaseCommand command) {
+        return availability.release(command);
     }
 
     @PostMapping("/{id}/confirm-availability")

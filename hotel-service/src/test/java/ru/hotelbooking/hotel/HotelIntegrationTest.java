@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import static ru.hotelbooking.hotel.api.HotelDtos.*;
+import static ru.hotelbooking.hotel.api.RoomDtos.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.*;
@@ -18,6 +19,7 @@ import org.springframework.test.context.*;
 import org.springframework.test.web.servlet.MockMvc;
 import ru.hotelbooking.common.api.ApiException;
 import ru.hotelbooking.common.contract.*;
+import ru.hotelbooking.common.testsupport.TestKeys;
 import ru.hotelbooking.hotel.repository.*;
 import ru.hotelbooking.hotel.service.*;
 
@@ -336,5 +338,195 @@ class HotelIntegrationTest {
                 .andExpect(status().isNoContent());
         mvc.perform(get("/api/rooms/" + id).header("Authorization", "Bearer " + user))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void parallelAllocationsDistributeNonOverlappingDatesEvenly() throws Exception {
+        var gate = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(32)) {
+            var futures = new ArrayList<Future<ReservationReceipt>>();
+            for (int i = 0; i < 32; i++) {
+                var day = start.plusDays(i * 2L);
+                futures.add(
+                        executor.submit(
+                                () -> {
+                                    gate.await();
+                                    return availability.allocate(
+                                            new AllocationCommand(
+                                                    UUID.randomUUID(),
+                                                    day,
+                                                    day.plusDays(1),
+                                                    hotelId));
+                                }));
+            }
+            gate.countDown();
+            for (var future : futures)
+                assertThat(future.get(15, TimeUnit.SECONDS).status()).isEqualTo("RESERVED");
+        }
+        assertThat(rooms.findById(first).orElseThrow().getTimesBooked()).isEqualTo(16);
+        assertThat(rooms.findById(second).orElseThrow().getTimesBooked()).isEqualTo(16);
+        assertThat(rooms.findById(disabled).orElseThrow().getTimesBooked()).isZero();
+    }
+
+    @Test
+    void concurrentRequestsCannotReuseBookingIdForDifferentRooms() throws Exception {
+        var command = new ReservationCommand(UUID.randomUUID(), start, end);
+        var gate = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var tasks = new ArrayList<Future<Boolean>>();
+            for (long room : List.of(first, second))
+                tasks.add(
+                        executor.submit(
+                                () -> {
+                                    gate.await();
+                                    try {
+                                        availability.confirm(room, command);
+                                        return true;
+                                    } catch (ApiException conflict) {
+                                        assertThat(conflict.code())
+                                                .isEqualTo("IDEMPOTENCY_CONFLICT");
+                                        return false;
+                                    }
+                                }));
+            gate.countDown();
+            int winners = 0;
+            for (var task : tasks) if (task.get(10, TimeUnit.SECONDS)) winners++;
+            assertThat(winners).isEqualTo(1);
+        }
+        assertThat(reservations.count()).isEqualTo(1);
+        assertThat(rooms.findAll().stream().mapToLong(room -> room.getTimesBooked()).sum())
+                .isEqualTo(1);
+    }
+
+    @Test
+    void concurrentDuplicateAllocationsSelectOneRoomAndCountOnce() throws Exception {
+        var command = new AllocationCommand(UUID.randomUUID(), start, end, hotelId);
+        try (var executor = Executors.newFixedThreadPool(8)) {
+            var tasks = new ArrayList<Callable<ReservationReceipt>>();
+            for (int i = 0; i < 8; i++) tasks.add(() -> availability.allocate(command));
+            for (var future : executor.invokeAll(tasks)) {
+                assertThat(future.get(10, TimeUnit.SECONDS).roomId()).isEqualTo(first);
+            }
+        }
+        assertThat(reservations.count()).isEqualTo(1);
+        assertThat(rooms.findById(first).orElseThrow().getTimesBooked()).isEqualTo(1);
+        assertThat(rooms.findById(second).orElseThrow().getTimesBooked()).isZero();
+    }
+
+    @Test
+    void releaseWithoutRoomPreventsAnyLateReservation() {
+        var id = UUID.randomUUID();
+        var released =
+                availability.release(new ReleaseCommand(id, ReleaseCommand.Reason.COMPENSATION));
+        assertThat(released.roomId()).isNull();
+
+        assertThatThrownBy(() -> availability.allocate(new AllocationCommand(id, start, end, null)))
+                .isInstanceOfSatisfying(
+                        ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("RESERVATION_RELEASED"));
+        assertThatThrownBy(
+                        () -> availability.confirm(first, new ReservationCommand(id, start, end)))
+                .isInstanceOfSatisfying(
+                        ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("RESERVATION_RELEASED"));
+        assertThat(rooms.findById(first).orElseThrow().getTimesBooked()).isZero();
+    }
+
+    @Test
+    void lostAllocationCanBeReleasedByBookingIdAndUsageRestored() {
+        var command = new AllocationCommand(UUID.randomUUID(), start, end, hotelId);
+        var receipt = availability.allocate(command);
+
+        availability.release(
+                new ReleaseCommand(command.bookingId(), ReleaseCommand.Reason.COMPENSATION));
+        availability.release(
+                new ReleaseCommand(command.bookingId(), ReleaseCommand.Reason.COMPENSATION));
+
+        assertThat(rooms.findById(receipt.roomId()).orElseThrow().getTimesBooked()).isZero();
+        assertThat(catalog.available(start, end, hotelId, false, 0, 20).content()).hasSize(2);
+    }
+
+    @Test
+    void allocationHonoursHotelAndRejectsChangedIdempotentPayload() {
+        var other = catalog.createHotel(new HotelInput("Другой", "Казань")).id();
+        long room = catalog.createRoom(new RoomInput(other, "301", true)).id();
+        var command = new AllocationCommand(UUID.randomUUID(), start, end, other);
+        assertThat(availability.allocate(command).roomId()).isEqualTo(room);
+
+        assertThatThrownBy(
+                        () ->
+                                availability.allocate(
+                                        new AllocationCommand(
+                                                command.bookingId(), start, end, hotelId)))
+                .isInstanceOfSatisfying(
+                        ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("IDEMPOTENCY_CONFLICT"));
+        assertThatThrownBy(
+                        () ->
+                                availability.allocate(
+                                        new AllocationCommand(
+                                                UUID.randomUUID(), start, end, other)))
+                .isInstanceOfSatisfying(
+                        ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("ROOM_UNAVAILABLE"));
+    }
+
+    @Test
+    void allocationAndReleaseByBookingRequireServiceAuthority() throws Exception {
+        var command = new AllocationCommand(UUID.randomUUID(), start, end, hotelId);
+        for (String token : List.of(user, admin)) {
+            mvc.perform(
+                            post("/api/rooms/allocate")
+                                    .header("Authorization", "Bearer " + token)
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(mapper.writeValueAsString(command)))
+                    .andExpect(status().isForbidden());
+            mvc.perform(
+                            post("/api/rooms/release")
+                                    .header("Authorization", "Bearer " + token)
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(
+                                            mapper.writeValueAsString(
+                                                    new ReleaseCommand(
+                                                            command.bookingId(),
+                                                            ReleaseCommand.Reason.COMPENSATION))))
+                    .andExpect(status().isForbidden());
+        }
+        mvc.perform(
+                        post("/api/rooms/allocate")
+                                .header("Authorization", "Bearer " + TestKeys.service())
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(mapper.writeValueAsString(command)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.roomId").value(first));
+        mvc.perform(
+                        post("/api/rooms/release")
+                                .header("Authorization", "Bearer " + TestKeys.service())
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        mapper.writeValueAsString(
+                                                new ReleaseCommand(
+                                                        command.bookingId(),
+                                                        ReleaseCommand.Reason.COMPENSATION))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RELEASED"));
+    }
+
+    @Test
+    void duplicateUuidCannotOverwriteExistingReservationThroughRepository() {
+        var command = new ReservationCommand(UUID.randomUUID(), start, end);
+        availability.confirm(first, command);
+
+        assertThatThrownBy(
+                        () ->
+                                reservations.saveAndFlush(
+                                        ru.hotelbooking.hotel.domain.RoomReservation.reserve(
+                                                command.bookingId(), second, start, end)))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        assertThat(reservations.findById(command.bookingId()).orElseThrow().getRoomId())
+                .isEqualTo(first);
+        assertThat(rooms.findById(first).orElseThrow().getTimesBooked()).isEqualTo(1);
+        assertThat(rooms.findById(second).orElseThrow().getTimesBooked()).isZero();
     }
 }

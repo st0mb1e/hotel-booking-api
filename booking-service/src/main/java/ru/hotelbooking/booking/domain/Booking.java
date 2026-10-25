@@ -119,7 +119,7 @@ public class Booking {
         status = Status.CANCELLED;
         this.failureCode = failureCode;
         cancellationReason = reason;
-        compensationPending = needsCompensation && roomId != null;
+        compensationPending = needsCompensation;
         nextCompensationAt = compensationPending ? now : null;
         updatedAt = now;
     }

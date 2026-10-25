@@ -1,13 +1,13 @@
 package ru.hotelbooking.booking.client;
 
-import java.time.LocalDate;
-import java.util.List;
-import ru.hotelbooking.common.contract.*;
+import ru.hotelbooking.common.contract.AllocationCommand;
+import ru.hotelbooking.common.contract.ReleaseCommand;
+import ru.hotelbooking.common.contract.ReservationCommand;
 
 public interface HotelClient {
-    List<RoomSummary> recommend(LocalDate start, LocalDate end, Long hotelId);
+    long allocate(AllocationCommand command);
 
     void confirm(long roomId, ReservationCommand command);
 
-    void release(long roomId, ReleaseCommand command);
+    void release(ReleaseCommand command);
 }

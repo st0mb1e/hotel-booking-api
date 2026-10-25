@@ -37,28 +37,18 @@ public class BookingService {
         if (!start.created()) return outcome(start.booking(), true);
         UUID id = start.booking().id();
         try {
-            var candidates =
-                    input.autoSelect()
-                            ? hotel
-                                    .recommend(input.startDate(), input.endDate(), input.hotelId())
-                                    .stream()
-                                    .map(RoomSummary::id)
-                                    .toList()
-                            : List.of(input.roomId());
-            boolean confirmed = false;
-            for (long roomId : candidates) {
-                if (!transactions.assign(id, roomId)) break;
-                try {
-                    hotel.confirm(
-                            roomId, new ReservationCommand(id, input.startDate(), input.endDate()));
-                    confirmed = transactions.confirm(id);
-                    break;
-                } catch (HotelRejectedException rejected) {
-                    if (input.autoSelect() && "ROOM_UNAVAILABLE".equals(rejected.code())) continue;
-                    throw rejected;
-                }
+            if (input.autoSelect()) {
+                long roomId =
+                        hotel.allocate(
+                                new AllocationCommand(
+                                        id, input.startDate(), input.endDate(), input.hotelId()));
+                if (transactions.assign(id, roomId)) transactions.confirm(id);
+            } else if (transactions.assign(id, input.roomId())) {
+                hotel.confirm(
+                        input.roomId(),
+                        new ReservationCommand(id, input.startDate(), input.endDate()));
+                transactions.confirm(id);
             }
-            if (!confirmed) transactions.fail(id, "ROOM_UNAVAILABLE", false);
         } catch (HotelRejectedException rejected) {
             transactions.fail(
                     id, rejected.status() == 404 ? "ROOM_NOT_FOUND" : "ROOM_UNAVAILABLE", false);

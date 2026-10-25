@@ -1,6 +1,7 @@
 package ru.hotelbooking.hotel.api;
 
 import static ru.hotelbooking.hotel.api.HotelDtos.*;
+import static ru.hotelbooking.hotel.api.StatisticsDtos.OccupancyReport;
 
 import io.swagger.v3.oas.annotations.Operation;
 import jakarta.validation.Valid;

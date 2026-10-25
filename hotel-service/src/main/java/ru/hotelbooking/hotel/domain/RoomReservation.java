@@ -21,8 +21,14 @@ public class RoomReservation {
 
     @Id private UUID bookingId;
 
-    @Column(nullable = false)
     private Long roomId;
+
+    @Column(nullable = false)
+    private boolean autoSelected;
+
+    private Long hotelFilterId;
+
+    @Version private Long version;
 
     private LocalDate startDate;
     private LocalDate endDate;
@@ -47,6 +53,14 @@ public class RoomReservation {
         reservation.endDate = end;
         reservation.status = Status.RESERVED;
         reservation.createdAt = Instant.now();
+        return reservation;
+    }
+
+    public static RoomReservation allocate(
+            UUID bookingId, long roomId, LocalDate start, LocalDate end, Long hotelId) {
+        var reservation = reserve(bookingId, roomId, start, end);
+        reservation.autoSelected = true;
+        reservation.hotelFilterId = hotelId;
         return reservation;
     }
 
