@@ -1,0 +1,38 @@
+server:
+  port: ${PORT:8081}
+spring:
+  application:
+    name: hotel-service
+  datasource:
+    url: jdbc:h2:mem:hotel;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000
+    username: sa
+    password:
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+eureka:
+  client:
+    registry-fetch-interval-seconds: 5
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+app:
+  jwt:
+    issuer: hotel-booking
+    public-key: ${JWT_PUBLIC_KEY:file:./.local/keys/public.pem}
+  demo:
+    enabled: ${DEMO_ENABLED:true}
+logging:
+  structured:
+    format:
+      console: logstash

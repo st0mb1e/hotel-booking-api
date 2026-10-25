@@ -1,0 +1,8 @@
+**/target/
+.local/
+.idea/
+*.iml
+.DS_Store
+*.log
+.env
+__pycache__/

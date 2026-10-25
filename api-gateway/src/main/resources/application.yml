@@ -1,0 +1,32 @@
+server:
+  port: ${PORT:8080}
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    loadbalancer:
+      cache:
+        enabled: false
+  main:
+    web-application-type: reactive
+eureka:
+  client:
+    registry-fetch-interval-seconds: 5
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+app:
+  jwt:
+    issuer: hotel-booking
+    public-key: ${JWT_PUBLIC_KEY:file:./.local/keys/public.pem}
+
+logging:
+  structured:
+    format:
+      console: logstash
