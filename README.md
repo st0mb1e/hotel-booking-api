@@ -127,7 +127,7 @@ python3 scripts/load-test.py
 python3 scripts/integration-test.py
 ```
 
-Сценарии тестирования и соответствие критериям описаны в [инструкции по проверке](docs/verification.md).
+Команды и сценарии тестирования описаны в [инструкции по проверке](docs/verification.md).
 
 ## Документация
 
