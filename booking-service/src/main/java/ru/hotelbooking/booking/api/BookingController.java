@@ -31,7 +31,7 @@ public class BookingController {
     }
 
     @PostMapping({"/api/bookings", "/booking"})
-    @Operation(summary = "Создать бронирование; повторы используют тот же Idempotency-Key")
+    @Operation(summary = "Создание бронирования с Idempotency-Key")
     public ResponseEntity<BookingView> create(
             @AuthenticationPrincipal Jwt jwt,
             @RequestHeader("Idempotency-Key") @Pattern(regexp = "[A-Za-z0-9._:-]{1,128}")

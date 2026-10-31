@@ -24,8 +24,15 @@ public class HotelCallPolicy {
         observe();
     }
 
-    public <T> T execute(Supplier<T> action, boolean releasing) {
-        var breaker = releasing ? compensation : operations;
+    public <T> T executeOperation(Supplier<T> action) {
+        return execute(action, operations);
+    }
+
+    public <T> T executeCompensation(Supplier<T> action) {
+        return execute(action, compensation);
+    }
+
+    private <T> T execute(Supplier<T> action, CircuitBreaker breaker) {
         try {
             return Retry.decorateSupplier(retry, CircuitBreaker.decorateSupplier(breaker, action))
                     .get();

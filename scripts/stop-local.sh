@@ -23,7 +23,7 @@ for module in api-gateway booking-service hotel-service discovery-server; do
             echo "$module остановлен (PID $pid)"
             ;;
         "") ;;
-        *) echo "PID $pid относится к другому процессу; пропущен" >&2 ;;
+        *) echo "PID $pid относится к другому процессу. Остановка пропущена" >&2 ;;
     esac
     rm -f "$pidfile"
 done

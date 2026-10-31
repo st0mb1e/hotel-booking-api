@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Проверка запущенной системы через Gateway; создаёт и отменяет тестовые брони."""
+"""Проверка запущенной системы через Gateway с созданием и отменой брони."""
 
 import concurrent.futures
 import datetime as dt

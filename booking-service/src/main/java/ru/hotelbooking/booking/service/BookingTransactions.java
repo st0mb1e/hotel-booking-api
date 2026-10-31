@@ -2,6 +2,9 @@ package ru.hotelbooking.booking.service;
 
 import static ru.hotelbooking.booking.api.BookingDtos.*;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.*;
 import java.util.*;
 import org.slf4j.*;
@@ -50,7 +53,7 @@ public class BookingTransactions {
                                 input.startDate(),
                                 input.endDate(),
                                 key,
-                                input.fingerprint(),
+                                fingerprint(input),
                                 clock.instant()));
         log.atInfo()
                 .addKeyValue("event", "booking_created")
@@ -73,8 +76,27 @@ public class BookingTransactions {
                 input);
     }
 
+    private String fingerprint(CreateBooking input) {
+        try {
+            String canonical =
+                    input.autoSelect()
+                            + ":"
+                            + (input.autoSelect() ? input.hotelId() : input.roomId())
+                            + ":"
+                            + input.startDate()
+                            + ":"
+                            + input.endDate();
+            return HexFormat.of()
+                    .formatHex(
+                            MessageDigest.getInstance("SHA-256")
+                                    .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     private Start existing(Booking booking, CreateBooking input) {
-        if (!booking.getFingerprint().equals(input.fingerprint()))
+        if (!booking.getFingerprint().equals(fingerprint(input)))
             throw new ApiException(
                     HttpStatus.CONFLICT,
                     "IDEMPOTENCY_CONFLICT",

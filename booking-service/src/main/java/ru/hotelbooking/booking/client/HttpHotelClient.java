@@ -41,38 +41,35 @@ public class HttpHotelClient implements HotelClient {
 
     @Override
     public long allocate(AllocationCommand command) {
-        return calls.execute(
+        return calls.executeOperation(
                 () -> {
                     var receipt = exchange("/api/rooms/allocate", command);
                     requireReceipt(receipt, command.bookingId(), "RESERVED");
                     requireRoom(receipt, null);
                     return receipt.roomId();
-                },
-                false);
+                });
     }
 
     @Override
     public void confirm(long roomId, ReservationCommand command) {
-        calls.execute(
+        calls.executeOperation(
                 () -> {
                     var receipt =
                             exchange("/api/rooms/" + roomId + "/confirm-availability", command);
                     requireReceipt(receipt, command.bookingId(), "RESERVED");
                     requireRoom(receipt, roomId);
                     return null;
-                },
-                false);
+                });
     }
 
     @Override
     public void release(ReleaseCommand command) {
-        calls.execute(
+        calls.executeCompensation(
                 () -> {
                     var receipt = exchange("/api/rooms/release", command);
                     requireReceipt(receipt, command.bookingId(), "RELEASED");
                     return null;
-                },
-                true);
+                });
     }
 
     private ReservationReceipt exchange(String path, Object command) {

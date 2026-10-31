@@ -32,10 +32,10 @@ HOTEL_API_URL=http://127.0.0.1:18081 python3 scripts/integration-test.py
 
 | Критерий | Где проверяется |
 |---|---|
-| Планирование занятости | `AvailabilityService`, `HotelIntegrationTest`, `load-test.py`: атомарный выбор, порядок счётчик/id, календарь, конкуренция и идемпотентность |
+| Планирование занятости | `AvailabilityService`, `RoomAllocationTest`, `RoomReservationTest`, `load-test.py`: атомарный выбор, порядок счётчик/id, календарь, конкуренция и идемпотентность |
 | Согласованность сервисов | `BookingService`, `BookingRecovery`, `HttpHotelClientTest`, `integration-test.py`: локальные транзакции, компенсация, Retry/Timeout/Circuit Breaker |
-| Booking CRUD | `BookingIntegrationTest`: своя история, пагинация, даты, права, ключи повторов и отмена |
-| Hotel CRUD и аналитика | `HotelIntegrationTest`: CRUD, фильтрация и сортировка, занятые ночи и процент загрузки |
+| Booking CRUD | `BookingApiTest`, `BookingIdempotencyTest`, `BookingCancellationTest`: своя история, пагинация, даты, права, ключи повторов и отмена |
+| Hotel CRUD и аналитика | `HotelCatalogTest`, `RoomAllocationTest`: CRUD, фильтрация и сортировка, занятые ночи и процент загрузки |
 | Gateway и Eureka | `GatewayIntegrationTest` и smoke: маршруты `lb://`, передача JWT и requestId, поиск адресов |
 | Безопасность | Проверка JWT во всех бизнес-сервисах, методные `@PreAuthorize`, раздельные пользовательские/служебные аудитории, 401/403 |
 | Интеграционные тесты | Конкурентные JUnit-тесты плюс HTTP-проверки с настоящими сервисами и управляемыми отказами |
